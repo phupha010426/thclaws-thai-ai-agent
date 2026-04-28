@@ -1,0 +1,279 @@
+services:
+  api:
+    profiles: ["legacy-node"]
+    build: .
+    container_name: thaiaiagent-api
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      postgres: { condition: service_healthy }
+      mongodb: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_started }
+    command: node dist/server.js
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000/health',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    profiles: ["legacy-node"]
+    build: .
+    container_name: thaiaiagent-worker
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      postgres: { condition: service_healthy }
+      mongodb: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      core: { condition: service_started }
+    command: node dist/workers/line.worker.js
+
+  outbox:
+    profiles: ["legacy-node"]
+    build: .
+    container_name: thaiaiagent-outbox
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      postgres: { condition: service_healthy }
+      nats: { condition: service_started }
+    command: node dist/workers/outbox.worker.js
+
+  core:
+    profiles: ["legacy-node"]
+    build:
+      context: ./go-core
+      dockerfile: Dockerfile
+    container_name: thaiaiagent-core
+    restart: unless-stopped
+    environment:
+      CORE_LISTEN_ADDR: ":8080"
+      NATS_URL: "nats://nats:4222"
+    depends_on:
+      nats: { condition: service_healthy }
+    expose:
+      - "8080"
+
+  go-api:
+    build:
+      context: ./go-core
+      dockerfile: Dockerfile.api
+    container_name: thaiaiagent-go-api
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PORT: "3001"
+      LINE_CHANNEL_ACCESS_TOKEN: ${LINE_CHANNEL_ACCESS_TOKEN:?LINE_CHANNEL_ACCESS_TOKEN is required}
+      LINE_CHANNEL_SECRET: ${LINE_CHANNEL_SECRET:?LINE_CHANNEL_SECRET is required}
+      LIFF_ID: ${LIFF_ID:-}
+      LIFF_CHANNEL_ID: ${LIFF_CHANNEL_ID:-}
+      POSTGRES_URL: ${POSTGRES_URL:?POSTGRES_URL is required}
+      MONGODB_URL: ${MONGODB_URL:?MONGODB_URL is required}
+      REDIS_URL: ${REDIS_URL:?REDIS_URL is required}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://thaiaiagent.smlsoft.app}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio}
+      MINIO_PORT: ${MINIO_PORT:-9000}
+      MINIO_USE_SSL: ${MINIO_USE_SSL:-false}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+      MINIO_BUCKET: ${MINIO_BUCKET:-thaiaiagent}
+      IMAGE_ACCESS_SECRET: ${IMAGE_ACCESS_SECRET:-}
+      THCLAWS_GATEWAY_URL: ${THCLAWS_GATEWAY_URL:?THCLAWS_GATEWAY_URL is required}
+      THCLAWS_API_KEY: ${THCLAWS_API_KEY:?THCLAWS_API_KEY is required}
+      LINE_REPLY_TIMEOUT_MS: ${LINE_REPLY_TIMEOUT_MS:-35000}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      mongodb: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      nats: { condition: service_healthy }
+      minio: { condition: service_healthy }
+    expose:
+      - "3001"
+    # No healthcheck: distroless image has no wget/curl. Caddy's reverse_proxy
+    # will retry against the upstream on its own; container restarts come from
+    # the docker restart policy.
+
+  go-worker:
+    build:
+      context: ./go-core
+      dockerfile: Dockerfile.worker
+    container_name: thaiaiagent-go-worker
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      LINE_CHANNEL_ACCESS_TOKEN: ${LINE_CHANNEL_ACCESS_TOKEN:?LINE_CHANNEL_ACCESS_TOKEN is required}
+      LINE_CHANNEL_SECRET: ${LINE_CHANNEL_SECRET:?LINE_CHANNEL_SECRET is required}
+      LIFF_ID: ${LIFF_ID:-}
+      LIFF_CHANNEL_ID: ${LIFF_CHANNEL_ID:-}
+      POSTGRES_URL: ${POSTGRES_URL:?POSTGRES_URL is required}
+      MONGODB_URL: ${MONGODB_URL:?MONGODB_URL is required}
+      REDIS_URL: ${REDIS_URL:?REDIS_URL is required}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://thaiaiagent.smlsoft.app}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio}
+      MINIO_PORT: ${MINIO_PORT:-9000}
+      MINIO_USE_SSL: ${MINIO_USE_SSL:-false}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+      MINIO_BUCKET: ${MINIO_BUCKET:-thaiaiagent}
+      IMAGE_ACCESS_SECRET: ${IMAGE_ACCESS_SECRET:-}
+      THCLAWS_GATEWAY_URL: ${THCLAWS_GATEWAY_URL:?THCLAWS_GATEWAY_URL is required}
+      THCLAWS_API_KEY: ${THCLAWS_API_KEY:?THCLAWS_API_KEY is required}
+      LINE_REPLY_TIMEOUT_MS: ${LINE_REPLY_TIMEOUT_MS:-35000}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      mongodb: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      nats: { condition: service_healthy }
+      minio: { condition: service_healthy }
+
+  go-outbox:
+    build:
+      context: ./go-core
+      dockerfile: Dockerfile.outbox
+    container_name: thaiaiagent-go-outbox
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      LINE_CHANNEL_ACCESS_TOKEN: ${LINE_CHANNEL_ACCESS_TOKEN:?LINE_CHANNEL_ACCESS_TOKEN is required}
+      LINE_CHANNEL_SECRET: ${LINE_CHANNEL_SECRET:?LINE_CHANNEL_SECRET is required}
+      POSTGRES_URL: ${POSTGRES_URL:?POSTGRES_URL is required}
+      MONGODB_URL: ${MONGODB_URL:?MONGODB_URL is required}
+      REDIS_URL: ${REDIS_URL:?REDIS_URL is required}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+      THCLAWS_GATEWAY_URL: ${THCLAWS_GATEWAY_URL:?THCLAWS_GATEWAY_URL is required}
+      THCLAWS_API_KEY: ${THCLAWS_API_KEY:?THCLAWS_API_KEY is required}
+      NATS_URL: ${NATS_URL:?NATS_URL is required}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      nats: { condition: service_healthy }
+
+  nats:
+    image: nats:2.10-alpine
+    container_name: thaiaiagent-nats
+    restart: unless-stopped
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    volumes:
+      - nats_data:/data
+    expose:
+      - "4222"
+      - "8222"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8222/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: thaiaiagent-caddy
+    restart: unless-stopped
+    depends_on:
+      - go-api
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  migrate:
+    image: pgvector/pgvector:pg16
+    container_name: thaiaiagent-migrate
+    restart: "no"
+    environment:
+      POSTGRES_URL: ${POSTGRES_URL:?POSTGRES_URL is required}
+    volumes:
+      - ./go-core/migrations:/migrations:ro
+    command: >
+      sh -c 'DB_URL="$${POSTGRES_URL%%\?*}"; for f in /migrations/*.sql; do echo "applying $$f"; psql "$$DB_URL" -v ON_ERROR_STOP=1 -f "$$f"; done'
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: thaiaiagent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-thaiaiagent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-thaiaiagent}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-thaiaiagent} -d ${POSTGRES_DB:-thaiaiagent}"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  mongodb:
+    image: mongo:7
+    container_name: thaiaiagent-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:-root}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:?MONGO_INITDB_ROOT_PASSWORD is required}
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.runCommand({ping:1}).ok' | grep -q 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: thaiaiagent-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    container_name: thaiaiagent-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pg_data:
+  mongo_data:
+  redis_data:
+  minio_data:
+  nats_data:
+  caddy_data:
+  caddy_config:

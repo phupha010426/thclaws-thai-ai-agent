@@ -1,0 +1,34 @@
+thaiaiagent.smlsoft.app {
+  encode gzip zstd
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "no-referrer"
+  }
+
+  # Body cap: LINE webhook payloads stay under 64KB; reject anything larger
+  # at the edge so a malicious caller cannot fill the API's memory.
+  request_body /webhook/line {
+    max_size 256KB
+  }
+
+  # Per-route allow list. Real LINE userId rate limiting happens inside the
+  # Go API after signature verification; Caddy only rejects large bodies and
+  # unknown scanner paths at the edge.
+  @primary {
+    path /webhook/line /webhook/line/* /health /metrics /pdpa /pdpa/* /liff /liff/*
+  }
+  handle @primary {
+    reverse_proxy go-api:3001
+  }
+
+  handle_path /v2/* {
+    reverse_proxy go-api:3001
+  }
+
+  # Drop unknown requests with no body so scanners stop polling.
+  handle {
+    respond 444
+  }
+}

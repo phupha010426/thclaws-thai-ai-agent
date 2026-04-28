@@ -1,0 +1,456 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("POSTGRES_URL")
+  extensions = [vector]
+}
+
+enum AgentType {
+  PERSONAL
+  HOUSEHOLD
+  BUSINESS
+  COOPERATIVE
+  SUPPLIER
+  LOGISTICS
+}
+
+enum LedgerScope {
+  PERSONAL
+  HOUSEHOLD
+  BUSINESS
+  COOPERATIVE
+}
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+  TRANSFER
+  SAVING
+  DEBT
+}
+
+enum ConsentStatus {
+  GRANTED
+  REVOKED
+}
+
+enum ToolCallStatus {
+  SUCCESS
+  FAILED
+}
+
+model User {
+  id           String        @id @default(cuid())
+  lineUserId   String        @unique
+  displayName  String?
+  language     String        @default("th")
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  agents       Agent[]
+  transactions Transaction[]
+  projects     Project[]
+
+  @@map("users")
+}
+
+model Agent {
+  id        String    @id @default(cuid())
+  ownerId   String
+  type      AgentType
+  name      String
+  namespace String    @unique
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  owner     User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId, type, isActive])
+  @@map("agents")
+}
+
+model Household {
+  id        String            @id @default(cuid())
+  name      String
+  ownerId   String
+  createdAt DateTime          @default(now())
+  members   HouseholdMember[]
+
+  @@index([ownerId])
+  @@map("households")
+}
+
+model HouseholdMember {
+  id          String   @id @default(cuid())
+  householdId String
+  userId      String
+  role        String   @default("member")
+  createdAt   DateTime @default(now())
+  household   Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+
+  @@unique([householdId, userId])
+  @@index([userId])
+  @@map("household_members")
+}
+
+model Business {
+  id        String   @id @default(cuid())
+  ownerId   String
+  name      String
+  type      String   @default("ร้านค้าเล็ก")
+  createdAt DateTime @default(now())
+
+  @@index([ownerId])
+  @@map("businesses")
+}
+
+model Category {
+  id        String          @id @default(cuid())
+  scope     LedgerScope     @default(PERSONAL)
+  type      TransactionType
+  name      String
+  isDefault Boolean         @default(false)
+  createdAt DateTime        @default(now())
+
+  @@unique([scope, type, name])
+  @@map("categories")
+}
+
+model Transaction {
+  id          String          @id @default(cuid())
+  userId      String
+  agentId     String?
+  namespace   String?
+  scope       LedgerScope     @default(PERSONAL)
+  scopeId     String?
+  type        TransactionType
+  amount      Decimal         @db.Decimal(12, 2)
+  currency    String          @default("THB")
+  category    String
+  note        String?
+  counterpartyName String?
+  counterpartyRole String?
+  source      String          @default("line")
+  confidence  Float           @default(1)
+  happenedAt  DateTime        @default(now())
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  deletedAt   DateTime?
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  allocations TransactionProjectAllocation[]
+
+  @@index([userId, happenedAt])
+  @@index([userId, type, happenedAt])
+  @@index([userId, namespace, happenedAt])
+  @@index([namespace, happenedAt])
+  @@index([scope, scopeId, happenedAt])
+  @@map("transactions")
+}
+
+model Project {
+  id          String   @id @default(cuid())
+  userId      String
+  namespace   String
+  name        String
+  description String?
+  status      String   @default("ACTIVE")
+  color       String   @default("#0f766e")
+  budgetAmount Decimal? @db.Decimal(12, 2)
+  targetDate  DateTime?
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  allocations TransactionProjectAllocation[]
+
+  @@index([userId, namespace, status])
+  @@map("projects")
+}
+
+model TransactionProjectAllocation {
+  id            String      @id @default(cuid())
+  namespace     String
+  userId        String
+  transactionId String
+  projectId     String
+  amount        Decimal     @db.Decimal(12, 2)
+  percent       Decimal     @default(0) @db.Decimal(7, 4)
+  note          String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  transaction   Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  project       Project     @relation(fields: [projectId], references: [id])
+
+  @@unique([transactionId, projectId])
+  @@index([namespace, projectId, createdAt])
+  @@index([userId, transactionId])
+  @@map("transaction_project_allocations")
+}
+
+model ChartAccount {
+  id            String   @id @default(cuid())
+  namespace     String
+  code          String
+  name          String
+  accountType   String
+  normalBalance String
+  isSystem      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  lines         JournalLine[]
+
+  @@unique([namespace, code])
+  @@index([namespace, accountType, code])
+  @@map("chart_accounts")
+}
+
+model JournalEntry {
+  id                  String   @id @default(cuid())
+  namespace           String
+  userId              String
+  agentId             String?
+  sourceTransactionId String?
+  memo                String?
+  status              String   @default("POSTED")
+  causationId         String?
+  occurredAt          DateTime @default(now())
+  createdAt           DateTime @default(now())
+  lines               JournalLine[]
+
+  @@index([namespace, occurredAt(sort: Desc)])
+  @@index([userId, occurredAt(sort: Desc)])
+  @@map("journal_entries")
+}
+
+model JournalLine {
+  id             String       @id @default(cuid())
+  journalEntryId String
+  namespace      String
+  accountId      String
+  debit          Decimal      @default(0) @db.Decimal(12, 2)
+  credit         Decimal      @default(0) @db.Decimal(12, 2)
+  currency       String       @default("THB")
+  memo           String?
+  createdAt      DateTime     @default(now())
+  journalEntry   JournalEntry @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  account        ChartAccount @relation(fields: [accountId], references: [id])
+
+  @@index([namespace, accountId])
+  @@index([journalEntryId])
+  @@map("journal_lines")
+}
+
+model Budget {
+  id        String      @id @default(cuid())
+  userId    String
+  scope     LedgerScope @default(PERSONAL)
+  scopeId   String?
+  category  String
+  amount    Decimal     @db.Decimal(12, 2)
+  period    String      @default("monthly")
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@index([userId, scope, scopeId])
+  @@map("budgets")
+}
+
+model Goal {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  target    Decimal  @db.Decimal(12, 2)
+  current   Decimal  @default(0) @db.Decimal(12, 2)
+  dueDate   DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@map("goals")
+}
+
+model Permission {
+  id           String   @id @default(cuid())
+  actorAgentId String
+  resource     String
+  action       String
+  scope        String
+  expiresAt    DateTime?
+  createdAt    DateTime @default(now())
+
+  @@index([actorAgentId, resource, action])
+  @@map("permissions")
+}
+
+model Consent {
+  id        String        @id @default(cuid())
+  userId    String
+  purpose   String
+  status    ConsentStatus @default(GRANTED)
+  grantedAt DateTime      @default(now())
+  revokedAt DateTime?
+
+  @@unique([userId, purpose])
+  @@index([userId, purpose, status])
+  @@map("consents")
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  action    String
+  resource  String
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([actorId, createdAt])
+  @@index([action, createdAt])
+  @@map("audit_logs")
+}
+
+model ToolCall {
+  id        String         @id @default(cuid())
+  actorId   String?
+  toolName  String
+  status    ToolCallStatus
+  latencyMs Int?
+  metadata  Json?
+  createdAt DateTime       @default(now())
+
+  @@index([actorId, toolName, createdAt])
+  @@map("tool_calls")
+}
+
+model CostLog {
+  id          String   @id @default(cuid())
+  actorId     String?
+  provider    String
+  model       String
+  inputTokens Int      @default(0)
+  outputTokens Int     @default(0)
+  costUsd     Decimal  @default(0) @db.Decimal(12, 6)
+  createdAt   DateTime @default(now())
+
+  @@index([actorId, createdAt])
+  @@map("cost_logs")
+}
+
+// Append-only event log for the ledger. Transactions in `transactions` are a
+// projection over LedgerEvent. Replay by `(namespace, sequence)` to rebuild
+// summaries from scratch — never mutate or delete rows here.
+model LedgerEvent {
+  id          BigInt   @id @default(autoincrement())
+  namespace   String
+  userId      String
+  type        String   // tx.recorded | tx.reversed | budget.set | goal.advanced | ...
+  payload     Json
+  causationId String?  // upstream event/job that caused this one
+  correlationId String? // group of events that belong to the same user intent
+  occurredAt  DateTime @default(now())
+
+  @@index([namespace, id])
+  @@index([userId, type, occurredAt])
+  @@map("ledger_events")
+}
+
+// Personal wiki — a knowledge graph scoped per LINE userId namespace.
+// Pages are nodes (entities/preferences/events), aliases let unstructured Thai
+// text resolve to pages, edges describe relations ("likes", "lives_in",
+// "owes", "happenedAt"). The graph is used by retrieval to expand context
+// beyond pure embedding similarity, e.g. "ลุงจืด ไม่กินเผ็ด" connects to
+// "อาหาร" and "สุขภาพ" through edges so the agent can reason about constraints.
+model WikiPage {
+  id         String        @id @default(cuid())
+  namespace  String
+  slug       String
+  title      String
+  kind       String        @default("concept") // person | place | item | event | concept | preference | rule
+  summary    String?
+  bodyMd     String        @default("") @map("body_md")
+  importance Float         @default(0.5)
+  source     String        @default("auto") // auto | user | thclaws
+  metadata   Json?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  aliases    WikiAlias[]
+  outgoing   WikiEdge[]    @relation("WikiEdgeFrom")
+  incoming   WikiEdge[]    @relation("WikiEdgeTo")
+
+  @@unique([namespace, slug])
+  @@index([namespace, kind])
+  @@index([namespace, updatedAt(sort: Desc)])
+  @@map("wiki_pages")
+}
+
+model WikiAlias {
+  id        BigInt   @id @default(autoincrement())
+  pageId    String
+  namespace String
+  alias     String
+  page      WikiPage @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([namespace, alias])
+  @@index([pageId])
+  @@map("wiki_aliases")
+}
+
+model WikiEdge {
+  id         BigInt   @id @default(autoincrement())
+  namespace  String
+  fromPageId String
+  toPageId   String
+  relation   String
+  weight     Float    @default(1)
+  metadata   Json?
+  createdAt  DateTime @default(now())
+  fromPage   WikiPage @relation("WikiEdgeFrom", fields: [fromPageId], references: [id], onDelete: Cascade)
+  toPage     WikiPage @relation("WikiEdgeTo", fields: [toPageId], references: [id], onDelete: Cascade)
+
+  @@unique([namespace, fromPageId, toPageId, relation])
+  @@index([fromPageId])
+  @@index([toPageId])
+  @@map("wiki_edges")
+}
+
+// Vector index for the conversational memory. Each row stores the embedding
+// of a memory_item / wiki_page / fact along with the namespace it belongs to,
+// so retrieval stays scoped per LINE userId and never leaks across tenants.
+model MemoryEmbedding {
+  id          String                       @id @default(cuid())
+  namespace   String
+  sourceType  String                       // memory_item | wiki_page | summary
+  sourceId    String
+  content     String
+  embedding   Unsupported("vector(1024)")
+  metadata    Json?
+  createdAt   DateTime                     @default(now())
+  updatedAt   DateTime                     @updatedAt
+
+  @@unique([namespace, sourceType, sourceId])
+  @@index([namespace, sourceType])
+  @@map("memory_embeddings")
+}
+
+// Transactional outbox. Writers insert one row per side-effect inside the same
+// DB transaction that mutates state, then a relay drains pending rows into
+// NATS / external systems exactly once.
+model EventOutbox {
+  id          BigInt   @id @default(autoincrement())
+  topic       String   // NATS subject, e.g. ledger.tx.recorded
+  payload     Json
+  status      String   @default("pending") // pending | published | failed
+  attempts    Int      @default(0)
+  lastError   String?
+  publishedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@index([topic, status])
+  @@map("event_outbox")
+}

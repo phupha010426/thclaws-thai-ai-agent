@@ -1,0 +1,28 @@
+node_modules
+dist
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+
+# Local helpers and ops scripts (run on host, not in image)
+scripts/
+
+# Tests + dev artifacts
+tests
+*.test.ts
+.codex-*
+
+# Docs / handoff
+HANDOFF_FOR_CLAUDE_CODE.md
+PROJECT_PLAN.md
+README.md
+
+# Editor / OS
+.vscode
+.idea
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

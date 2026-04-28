@@ -1,0 +1,23 @@
+node_modules
+dist
+.env
+.env.*
+!.env.example
+.DS_Store
+coverage
+*.log
+deploy.tar.gz
+*.tar.gz
+*.pem
+*.key
+
+# Go core build artefacts
+go-core/bin/
+go-core/tmp/
+go-core/**/coverage.out
+go-core/.gocache/
+go-core/api
+go-core/worker
+go-core/outbox
+go-core/*.exe
+*.go.[0-9]*
