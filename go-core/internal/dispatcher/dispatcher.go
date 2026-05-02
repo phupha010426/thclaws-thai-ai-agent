@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/thaiaiagent/go-core/internal/business"
+	"github.com/thaiaiagent/go-core/internal/household"
 	"github.com/thaiaiagent/go-core/internal/ledger"
 	"github.com/thaiaiagent/go-core/internal/liff"
 	"github.com/thaiaiagent/go-core/internal/media"
@@ -90,6 +92,8 @@ type Service struct {
 	vision            VisionAnalyzer
 	jobs              JobEnqueuer
 	webSearch         WebSearcher
+	households        *household.Service
+	businesses        *business.Service
 	liffIssuer        *liff.Handler
 	users             *users.Service
 	memory            *memory.MemoryService
@@ -1636,4 +1640,87 @@ func redactID(id string) string {
 		return id
 	}
 	return id[:8]
+}
+
+
+// ── Household / Business routing ──
+
+func (s *Service) handleHouseholdText(ctx context.Context, id users.Identity, replyToken, text string) (handled bool, intent string) {
+	if s.households == nil {
+		return false, ""
+	}
+	clean := strings.ToLower(strings.TrimSpace(text))
+
+	// "create house <name>" — สร้างบ้าน
+	if strings.HasPrefix(clean, "create house ") {
+		name := strings.TrimSpace(text[13:])
+		if name == "" {
+			return true, "household_no_name"
+		}
+		hh, err := s.households.Create(ctx, id.UserID, name)
+		if err != nil {
+			return true, "household_create_failed"
+		}
+		s.logger.Info("dispatcher: household created", "id", hh.ID, "name", hh.Name)
+		_ = s.replier.ReplyText(ctx, replyToken, "Household created: "+hh.Name)
+		return true, "household_created"
+	}
+
+	// "my houses" — list
+	if clean == "my houses" {
+		list, err := s.households.ListByOwner(ctx, id.UserID)
+		if err != nil || len(list) == 0 {
+			_ = s.replier.ReplyText(ctx, replyToken, "No households yet.")
+			return true, "household_list_empty"
+		}
+		var b strings.Builder
+		b.WriteString("Your households:\n")
+		for i, hh := range list {
+			b.WriteString(fmt.Sprintf("%d. %s\n", i+1, hh.Name))
+		}
+		_ = s.replier.ReplyText(ctx, replyToken, b.String())
+		return true, "household_list"
+	}
+
+	return false, ""
+}
+
+func (s *Service) handleBusinessText(ctx context.Context, id users.Identity, replyToken, text string) (handled bool, intent string) {
+	if s.businesses == nil {
+		return false, ""
+	}
+	clean := strings.ToLower(strings.TrimSpace(text))
+
+	// "open shop <name>" — เปิดร้าน
+	if strings.HasPrefix(clean, "open shop ") {
+		name := strings.TrimSpace(text[10:])
+		if name == "" {
+			return true, "business_no_name"
+		}
+		b, err := s.businesses.Create(ctx, id.UserID, name, "")
+		if err != nil {
+			return true, "business_create_failed"
+		}
+		s.logger.Info("dispatcher: business created", "id", b.ID, "name", b.Name)
+		_ = s.replier.ReplyText(ctx, replyToken, "Business created: "+b.Name)
+		return true, "business_created"
+	}
+
+	// "my shops" — list
+	if clean == "my shops" {
+		list, err := s.businesses.ListByOwner(ctx, id.UserID)
+		if err != nil || len(list) == 0 {
+			_ = s.replier.ReplyText(ctx, replyToken, "No businesses yet.")
+			return true, "business_list_empty"
+		}
+		var b strings.Builder
+		b.WriteString("Your businesses:\n")
+		for i, biz := range list {
+			b.WriteString(fmt.Sprintf("%d. %s (%s)\n", i+1, biz.Name, biz.Type))
+		}
+		_ = s.replier.ReplyText(ctx, replyToken, b.String())
+		return true, "business_list"
+	}
+
+	return false, ""
 }

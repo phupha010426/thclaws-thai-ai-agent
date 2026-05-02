@@ -27,3 +27,4 @@ docker-compose.override.yml
 
 # Prisma
 prisma/migrations/
+go-core/api
