@@ -90,6 +90,22 @@ const indexHTML = `<!doctype html>
       gap: 8px;
       margin-top: 12px;
     }
+    .scope-indicator {
+      position: sticky;
+      top: 52px;
+      z-index: 4;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 6px 12px;
+      margin: 0 0 8px;
+      background: rgba(15,118,110,.12);
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 800;
+      color: var(--teal);
+    }
     .quick button {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -369,6 +385,7 @@ const indexHTML = `<!doctype html>
 </head>
 <body>
   <main class="app">
+    <div class="scope-indicator" id="scopeIndicator">👤 บัญชีส่วนตัว</div>
     <div class="topbar">
       <div class="brand">
         <div class="mark">฿</div>
@@ -503,10 +520,10 @@ const indexHTML = `<!doctype html>
 
   <nav class="bottom" aria-label="เมนูหลัก">
     <div class="bottom-inner">
-      <button onclick="scrollToId('home')">สมุดบัญชี</button>
-      <button class="blue" onclick="scrollToId('documents')">เอกสาร</button>
-      <button class="slate" onclick="scrollToId('projects')">โครงการ</button>
-      <button class="red" onclick="sendLineCommand('บันทึกรายจ่าย')">บันทึก</button>
+      <button class="active" id="navPersonal" onclick="switchScope('personal')">👤 ส่วนตัว</button>
+      <button id="navHousehold" onclick="switchScope('household')">🏠 บ้าน</button>
+      <button id="navBusiness" onclick="switchScope('business')">🏪 ร้านค้า</button>
+      <button class="red" onclick="sendLineCommand('บันทึกรายจ่าย')">➕ บันทึก</button>
     </div>
   </nav>
   <div class="modal" id="txModal" role="dialog" aria-modal="true" aria-labelledby="txModalTitle">
@@ -547,7 +564,12 @@ const indexHTML = `<!doctype html>
       failures: 0,
       autoRefreshTimer: 0,
       retryTimer: 0,
-      editingTx: null
+      editingTx: null,
+      currentScope: 'personal',
+      households: [],
+      businesses: [],
+      selectedHouseholdId: '',
+      selectedBusinessId: ''
     };
 
     function readToken() {
@@ -1209,6 +1231,130 @@ const indexHTML = `<!doctype html>
     });
     updatePresetButtons();
     loadDashboard();
+
+    // ── Scope switching ──
+    async function switchScope(scope) {
+      state.currentScope = scope;
+      state.selectedHouseholdId = '';
+      state.selectedBusinessId = '';
+
+      // Update nav button active states
+      document.querySelectorAll('.bottom-inner button').forEach(b => b.classList.remove('active'));
+      const navBtn = document.getElementById('nav' + scope.charAt(0).toUpperCase() + scope.slice(1));
+      if (navBtn) navBtn.classList.add('active');
+
+      const indicator = document.getElementById('scopeIndicator');
+      const mainContent = document.getElementById('home');
+      const docSection = document.getElementById('documents');
+      const projectSection = document.getElementById('projects');
+
+      if (scope === 'personal') {
+        indicator.textContent = '👤 บัญชีส่วนตัว';
+        indicator.style.display = 'flex';
+        mainContent.style.display = '';
+        docSection.style.display = '';
+        projectSection.style.display = '';
+        loadDashboard();
+        return;
+      }
+
+      if (scope === 'household') {
+        indicator.textContent = '🏠 กำลังโหลดข้อมูลบ้าน...';
+        indicator.style.display = 'flex';
+        mainContent.style.display = 'none';
+        docSection.style.display = 'none';
+        projectSection.style.display = 'none';
+        try {
+          const json = await apiFetch('/liff/api/households');
+          state.households = json.households || [];
+          if (state.households.length === 0) {
+            showScopeFallback('household', 'คุณยังไม่มีบัญชีบ้าน');
+            return;
+          }
+          state.selectedHouseholdId = state.households[0].id;
+          indicator.textContent = '🏠 ' + state.households[0].name;
+          loadHouseholdDashboard();
+        } catch (err) {
+          showScopeFallback('household', 'โหลดข้อมูลบ้านไม่สำเร็จ');
+        }
+        return;
+      }
+
+      if (scope === 'business') {
+        indicator.textContent = '🏪 กำลังโหลดข้อมูลร้านค้า...';
+        indicator.style.display = 'flex';
+        mainContent.style.display = 'none';
+        docSection.style.display = 'none';
+        projectSection.style.display = 'none';
+        try {
+          const json = await apiFetch('/liff/api/businesses');
+          state.businesses = json.businesses || [];
+          if (state.businesses.length === 0) {
+            showScopeFallback('business', 'คุณยังไม่มีบัญชีร้านค้า');
+            return;
+          }
+          state.selectedBusinessId = state.businesses[0].id;
+          indicator.textContent = '🏪 ' + state.businesses[0].name;
+          loadBusinessDashboard();
+        } catch (err) {
+          showScopeFallback('business', 'โหลดข้อมูลร้านค้าไม่สำเร็จ');
+        }
+        return;
+      }
+    }
+
+    function showScopeFallback(scope, msg) {
+      const indicator = document.getElementById('scopeIndicator');
+      indicator.textContent = msg;
+      indicator.style.display = 'flex';
+      const recents = document.getElementById('recentList');
+      recents.innerHTML = '<div class="empty">' + msg + ' — สร้างในแชท LINE โดยพิมพ์ "บันทึกบ้าน" หรือ "สร้างร้านค้า" ครับ</div>';
+      document.getElementById('home').style.display = '';
+    }
+
+    async function loadHouseholdDashboard() {
+      try {
+        const json = await apiFetch('/liff/api/households/' + encodeURIComponent(state.selectedHouseholdId) + '/dashboard' + rangeQuery());
+        state.data = json.data;
+        document.getElementById('home').style.display = '';
+        renderHousehold(json.data);
+        renderRecent(json.data.recentTransactions || []);
+      } catch (err) {
+        showError('โหลดข้อมูลบ้านไม่สำเร็จครับ');
+      }
+    }
+
+    function renderHousehold(data) {
+      document.getElementById('updated').textContent = data?.serverTime || '';
+      document.getElementById('income').textContent = money(data?.totalIncome || 0) + ' บาท';
+      document.getElementById('expense').textContent = money(data?.totalExpense || 0) + ' บาท';
+      document.getElementById('balance').textContent = money((data?.totalIncome || 0) - (data?.totalExpense || 0)) + ' บาท';
+      document.getElementById('memberCount').textContent = (data?.members || []).length + ' คน';
+      drawCashflow(data?.cashflow || []);
+    }
+
+    async function loadBusinessDashboard() {
+      try {
+        const json = await apiFetch('/liff/api/businesses/' + encodeURIComponent(state.selectedBusinessId) + '/dashboard' + rangeQuery());
+        state.data = json.data;
+        document.getElementById('home').style.display = '';
+        renderBusiness(json.data);
+        renderRecent(json.data.recentTransactions || []);
+      } catch (err) {
+        showError('โหลดข้อมูลร้านค้าไม่สำเร็จครับ');
+      }
+    }
+
+    function renderBusiness(data) {
+      document.getElementById('updated').textContent = data?.serverTime || '';
+      document.getElementById('income').textContent = money(data?.totalIncome || 0) + ' บาท';
+      document.getElementById('expense').textContent = money(data?.totalExpense || 0) + ' บาท';
+      document.getElementById('balance').textContent = money((data?.totalIncome || 0) - (data?.totalExpense || 0)) + ' บาท';
+      document.getElementById('memberCount').textContent = money(data?.totalCoGS || 0) + ' บาท';
+      document.getElementById('memberCount').parentElement.querySelector('span:first-child').textContent = 'ต้นทุน';
+      drawCashflow(data?.cashflow || []);
+    }
+
   </script>
 </body>
 </html>`

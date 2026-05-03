@@ -60,6 +60,19 @@ func (h *Handler) Register(r chi.Router) {
 	r.Delete("/api/projects/{projectID}", h.deleteProject)
 	r.Patch("/api/transactions/{transactionID}", h.updateTransaction)
 	r.Delete("/api/transactions/{transactionID}", h.deleteTransaction)
+	// Household routes
+	r.Post("/api/households", h.createHousehold)
+	r.Get("/api/households", h.listMyHouseholds)
+	r.Post("/api/households/{householdID}/members", h.addHouseholdMember)
+	r.Get("/api/households/{householdID}/dashboard", h.householdDashboard)
+	r.Post("/api/households/{householdID}/transactions", h.createHouseholdTransaction)
+	// Business routes
+	r.Post("/api/businesses", h.createBusiness)
+	r.Get("/api/businesses", h.listMyBusinesses)
+	r.Get("/api/businesses/{businessID}/dashboard", h.businessDashboard)
+	r.Post("/api/businesses/{businessID}/sales", h.createBusinessSale)
+	r.Post("/api/businesses/{businessID}/purchases", h.createBusinessPurchase)
+	r.Get("/api/businesses/{businessID}/profit", h.businessProfit)
 	r.Get("/*", h.index)
 }
 

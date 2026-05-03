@@ -362,6 +362,14 @@ func (s *Service) handleText(ctx context.Context, id users.Identity, lineUserID,
 			[]string{"ช่วยเหลือ", "ไม่บันทึก"})
 	}
 
+	// ── Household / Business routing ──
+	if isHouseholdCommand(text) || isHouseholdSummary(text) {
+		return s.handleHouseholdText(ctx, id, replyToken, messageID, text)
+	}
+	if isBusinessSale(text) || isBusinessPurchase(text) || isBusinessProfit(text) {
+		return s.handleBusinessText(ctx, id, replyToken, messageID, text)
+	}
+
 	parsed := parser.Parse(text)
 	s.logger.Info("dispatcher: text parsed",
 		"intent", parsed.Intent,
@@ -1636,4 +1644,344 @@ func redactID(id string) string {
 		return id
 	}
 	return id[:8]
+}
+
+// ── Household / Business intent detection ──
+
+// isHouseholdCommand detects household recording commands like "บันทึกบ้าน", "ค่าใช้จ่ายบ้าน", etc.
+func isHouseholdCommand(text string) bool {
+	clean := strings.ToLower(strings.TrimSpace(text))
+	if clean == "" {
+		return false
+	}
+	phrases := []string{
+		"บันทึกบ้าน", "ค่าใช้จ่ายบ้าน", "บันทึกให้บ้าน", "รายจ่ายบ้าน",
+	}
+	for _, phrase := range phrases {
+		if strings.Contains(clean, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// isHouseholdSummary detects household summary request like "สรุปบ้าน".
+func isHouseholdSummary(text string) bool {
+	clean := strings.ToLower(strings.TrimSpace(text))
+	if clean == "" {
+		return false
+	}
+	return strings.Contains(clean, "สรุปบ้าน")
+}
+
+// isBusinessSale detects business sale recording like "ขาย", "ยอดขาย", "รายได้ร้าน".
+func isBusinessSale(text string) bool {
+	clean := strings.ToLower(strings.TrimSpace(text))
+	if clean == "" {
+		return false
+	}
+	phrases := []string{"ขาย", "ยอดขาย", "รายได้ร้าน"}
+	for _, phrase := range phrases {
+		if strings.Contains(clean, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// isBusinessPurchase detects business purchase recording like "ซื้อของเข้าร้าน", "ต้นทุนร้าน".
+func isBusinessPurchase(text string) bool {
+	clean := strings.ToLower(strings.TrimSpace(text))
+	if clean == "" {
+		return false
+	}
+	phrases := []string{"ซื้อของเข้าร้าน", "ต้นทุนร้าน", "ซื้อวัตถุดิบ"}
+	for _, phrase := range phrases {
+		if strings.Contains(clean, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// isBusinessProfit detects business profit/summary like "กำไร", "สรุปร้าน", "สรุปธุรกิจ".
+func isBusinessProfit(text string) bool {
+	clean := strings.ToLower(strings.TrimSpace(text))
+	if clean == "" {
+		return false
+	}
+	phrases := []string{"กำไร", "สรุปร้าน", "สรุปธุรกิจ"}
+	for _, phrase := range phrases {
+		if strings.Contains(clean, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// ── Household handler ──
+
+// handleHouseholdText handles household transaction recording and summary from LINE chat.
+func (s *Service) handleHouseholdText(ctx context.Context, id users.Identity, replyToken, messageID, text string) error {
+	if s.writer == nil {
+		return s.reply(ctx, id, replyToken, "ระบบบัญชีครัวเรือนยังไม่พร้อมครับ")
+	}
+
+	// If it's a summary request
+	if isHouseholdSummary(text) {
+		return s.handleHouseholdSummary(ctx, id, replyToken, text)
+	}
+
+	// Parse the text for amount / category / note using the existing parser
+	parsed := parser.Parse(text)
+
+	// If no amount found, ask the user
+	if parsed.Amount <= 0 {
+		return s.reply(ctx, id, replyToken,
+			"รับทราบครับ อยากบันทึกบัญชีบ้าน แต่ยังไม่เห็นจำนวนเงินครับ ขอตัวเลขด้วยนะครับ เช่น บันทึกบ้าน ค่าไฟ 500")
+	}
+
+	// Query user's households
+	households, err := s.writer.ListMyHouseholds(ctx, id.UserID)
+	if err != nil {
+		s.logger.Error("dispatcher: list households failed", "err", err, "userId", id.UserID)
+		return s.reply(ctx, id, replyToken, "ดึงข้อมูลบ้านไม่สำเร็จครับ ลองอีกครั้งนะครับ")
+	}
+
+	if len(households) == 0 {
+		return s.reply(ctx, id, replyToken,
+			"คุณยังไม่มีบ้านในระบบครับ สร้างบ้านผ่าน Mini App ก่อน แล้วค่อยบันทึกบัญชีบ้านนะครับ")
+	}
+
+	// Auto-select if only 1 household; otherwise ask user to choose
+	householdID := households[0].ID
+	if len(households) > 1 {
+		choices := make([]string, 0, len(households))
+		for _, h := range households {
+			choices = append(choices, h.Name)
+		}
+		// For simplicity, store pending and let user pick
+		_ = s.memory.SavePendingAccounting(ctx, memory.PendingAccountingInput{
+			OwnerID:   id.UserID,
+			AgentID:   id.AgentID,
+			Namespace: id.Namespace,
+			Original:  text,
+			Amount:    parsed.Amount,
+			Note:      parsed.Note,
+			Category:  parsed.Category,
+		})
+		return s.replyChoicesWithLead(ctx, id, replyToken,
+			[]string{"คุณมีหลายบ้านครับ ต้องการบันทึกให้บ้านไหน?"},
+			"เลือกบ้านที่ต้องการบันทึกครับ",
+			choices)
+	}
+
+	// Determine type: default to EXPENSE (most household entries are expenses)
+	txType := "EXPENSE"
+	if strings.Contains(strings.ToLower(text), "รายรับ") || strings.Contains(strings.ToLower(text), "รายได้") {
+		txType = "INCOME"
+	}
+
+	category := parsed.Category
+	if category == "" {
+		category = "อื่น ๆ"
+	}
+	note := parsed.Note
+	if note == "" {
+		note = strings.TrimSpace(text)
+	}
+
+	txID, err := s.writer.CreateHouseholdTransaction(ctx, id.UserID, householdID, ledger.HouseholdTransactionInput{
+		Type:     txType,
+		Amount:   parsed.Amount,
+		Category: category,
+		Note:     note,
+	})
+	if err != nil {
+		s.logger.Error("dispatcher: household transaction failed", "err", err)
+		return s.reply(ctx, id, replyToken, "บันทึกบัญชีบ้านไม่สำเร็จครับ ลองอีกครั้งนะครับ")
+	}
+
+	s.logger.Info("dispatcher: household transaction stored",
+		"txId", txID, "householdId", householdID, "type", txType, "amount", parsed.Amount)
+
+	direction := "รายจ่าย"
+	if txType == "INCOME" {
+		direction = "รายรับ"
+	}
+	return s.replyAccountingCard(ctx, id, replyToken, direction, note, parsed.Amount, category, nil)
+}
+
+// handleHouseholdSummary handles "สรุปบ้าน" requests.
+func (s *Service) handleHouseholdSummary(ctx context.Context, id users.Identity, replyToken, text string) error {
+	households, err := s.writer.ListMyHouseholds(ctx, id.UserID)
+	if err != nil {
+		s.logger.Error("dispatcher: list households for summary failed", "err", err)
+		return s.reply(ctx, id, replyToken, "ดึงข้อมูลบ้านไม่สำเร็จครับ ลองอีกครั้งนะครับ")
+	}
+
+	if len(households) == 0 {
+		return s.reply(ctx, id, replyToken,
+			"คุณยังไม่มีบ้านในระบบครับ สร้างบ้านผ่าน Mini App ก่อนนะครับ")
+	}
+
+	// If multiple households, ask which one
+	if len(households) > 1 {
+		choices := make([]string, 0, len(households))
+		for _, h := range households {
+			choices = append(choices, h.Name)
+		}
+		return s.replyChoices(ctx, id, replyToken, "ต้องการสรุปบ้านไหนครับ?", choices)
+	}
+
+	return s.buildAndReplyHouseholdSummary(ctx, id, replyToken, households[0])
+}
+
+// buildAndReplyHouseholdSummary computes and replies with a household summary.
+func (s *Service) buildAndReplyHouseholdSummary(ctx context.Context, id users.Identity, replyToken string, h ledger.Household) error {
+	now := thaitime.Now()
+	from := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	to := now
+
+	summary, err := ledger.HouseholdSummary(ctx, s.writer, id.UserID, h.ID,
+		from.Format(time.RFC3339Nano), to.Format(time.RFC3339Nano))
+	if err != nil {
+		s.logger.Error("dispatcher: household summary failed", "err", err)
+		return s.reply(ctx, id, replyToken, "สรุปบัญชีบ้านไม่สำเร็จครับ ลองอีกครั้งนะครับ")
+	}
+
+	title := fmt.Sprintf("สรุปบ้าน: %s", h.Name)
+	return s.replySummaryCard(ctx, id, replyToken, title, summary)
+}
+
+// ── Business handler ──
+
+// handleBusinessText handles business transaction recording and profit summary from LINE chat.
+func (s *Service) handleBusinessText(ctx context.Context, id users.Identity, replyToken, messageID, text string) error {
+	if s.writer == nil {
+		return s.reply(ctx, id, replyToken, "ระบบบัญชีธุรกิจยังไม่พร้อมครับ")
+	}
+
+	clean := strings.ToLower(strings.TrimSpace(text))
+
+	// Business summary / profit
+	if isBusinessProfit(text) {
+		return s.handleBusinessProfit(ctx, id, replyToken)
+	}
+
+	// Query user's businesses
+	businesses, err := s.writer.ListMyBusinesses(ctx, id.UserID)
+	if err != nil {
+		s.logger.Error("dispatcher: list businesses failed", "err", err)
+		return s.reply(ctx, id, replyToken, "ดึงข้อมูลธุรกิจไม่สำเร็จครับ ลองอีกครั้งนะครับ")
+	}
+
+	if len(businesses) == 0 {
+		return s.reply(ctx, id, replyToken,
+			"คุณยังไม่มีธุรกิจในระบบครับ สร้างธุรกิจผ่าน Mini App ก่อนนะครับ")
+	}
+
+	// Auto-select if only 1 business
+	businessID := businesses[0].ID
+	if len(businesses) > 1 {
+		choices := make([]string, 0, len(businesses))
+		for _, b := range businesses {
+			choices = append(choices, b.Name)
+		}
+		return s.replyChoices(ctx, id, replyToken, "คุณมีหลายธุรกิจครับ ต้องการบันทึกให้ธุรกิจไหน?", choices)
+	}
+
+	// Parse amount from text
+	parsed := parser.Parse(text)
+
+	if isBusinessSale(text) {
+		// "ขาย [product] [amount]"
+		if parsed.Amount <= 0 {
+			return s.reply(ctx, id, replyToken,
+				"รับทราบครับ อยากบันทึกยอดขาย แต่ยังไม่เห็นจำนวนเงินครับ ขอตัวเลขด้วยนะครับ เช่น ขาย กาแฟ 120")
+		}
+		product := parsed.Note
+		if product == "" {
+			product = "สินค้า"
+		}
+		txID, err := ledger.RecordBusinessSale(ctx, s.writer, id.UserID, businessID, product, parsed.Amount, 0, 0)
+		if err != nil {
+			s.logger.Error("dispatcher: business sale failed", "err", err)
+			return s.reply(ctx, id, replyToken, "บันทึกยอดขายไม่สำเร็จครับ ลองอีกครั้งนะครับ")
+		}
+		s.logger.Info("dispatcher: business sale stored",
+			"txId", txID, "businessId", businessID, "product", product, "amount", parsed.Amount)
+		return s.replyAccountingCard(ctx, id, replyToken, "รายรับ", product, parsed.Amount, "รายได้จากการขาย", nil)
+	}
+
+	if isBusinessPurchase(text) {
+		// "ซื้อ [item] [amount]"
+		if parsed.Amount <= 0 {
+			return s.reply(ctx, id, replyToken,
+				"รับทราบครับ อยากบันทึกต้นทุน แต่ยังไม่เห็นจำนวนเงินครับ ขอตัวเลขด้วยนะครับ เช่น ซื้อวัตถุดิบ กาแฟ 500")
+		}
+		item := parsed.Note
+		if item == "" {
+			item = "วัตถุดิบ"
+		}
+		txID, err := ledger.RecordBusinessPurchase(ctx, s.writer, id.UserID, businessID, item, parsed.Amount, 0, 0)
+		if err != nil {
+			s.logger.Error("dispatcher: business purchase failed", "err", err)
+			return s.reply(ctx, id, replyToken, "บันทึกต้นทุนไม่สำเร็จครับ ลองอีกครั้งนะครับ")
+		}
+		s.logger.Info("dispatcher: business purchase stored",
+			"txId", txID, "businessId", businessID, "item", item, "amount", parsed.Amount)
+		return s.replyAccountingCard(ctx, id, replyToken, "รายจ่าย", item, parsed.Amount, "ต้นทุนสินค้า", nil)
+	}
+
+	_ = clean // already consumed
+	return s.reply(ctx, id, replyToken, "รับทราบครับ แต่ผมไม่แน่ใจว่าต้องการทำอะไรกับธุรกิจครับ")
+}
+
+// handleBusinessProfit handles "กำไร", "สรุปร้าน", "สรุปธุรกิจ" requests.
+func (s *Service) handleBusinessProfit(ctx context.Context, id users.Identity, replyToken string) error {
+	businesses, err := s.writer.ListMyBusinesses(ctx, id.UserID)
+	if err != nil {
+		s.logger.Error("dispatcher: list businesses for profit failed", "err", err)
+		return s.reply(ctx, id, replyToken, "ดึงข้อมูลธุรกิจไม่สำเร็จครับ ลองอีกครั้งนะครับ")
+	}
+
+	if len(businesses) == 0 {
+		return s.reply(ctx, id, replyToken,
+			"คุณยังไม่มีธุรกิจในระบบครับ สร้างธุรกิจผ่าน Mini App ก่อนนะครับ")
+	}
+
+	if len(businesses) > 1 {
+		choices := make([]string, 0, len(businesses))
+		for _, b := range businesses {
+			choices = append(choices, b.Name)
+		}
+		return s.replyChoices(ctx, id, replyToken, "ต้องการดูกำไรของธุรกิจไหนครับ?", choices)
+	}
+
+	return s.buildAndReplyBusinessProfit(ctx, id, replyToken, businesses[0])
+}
+
+// buildAndReplyBusinessProfit computes and replies with a business profit summary.
+func (s *Service) buildAndReplyBusinessProfit(ctx context.Context, id users.Identity, replyToken string, b ledger.BusinessInfo) error {
+	now := thaitime.Now()
+	from := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	to := now
+
+	profit, err := ledger.ComputeBusinessProfit(ctx, s.writer, b.ID,
+		from.Format(time.RFC3339Nano), to.Format(time.RFC3339Nano))
+	if err != nil {
+		s.logger.Error("dispatcher: business profit failed", "err", err)
+		return s.reply(ctx, id, replyToken, "คำนวณกำไรไม่สำเร็จครับ ลองอีกครั้งนะครับ")
+	}
+
+	var msg strings.Builder
+	msg.WriteString(fmt.Sprintf("สรุปธุรกิจ: %s\n", b.Name))
+	msg.WriteString(fmt.Sprintf("ยอดขาย: %s บาท\n", ledger.FormatMoney(profit.TotalSales)))
+	msg.WriteString(fmt.Sprintf("ต้นทุนสินค้า: %s บาท\n", ledger.FormatMoney(profit.TotalPurchases)))
+	msg.WriteString(fmt.Sprintf("ค่าใช้จ่ายรวม: %s บาท\n", ledger.FormatMoney(profit.TotalExpenses)))
+	msg.WriteString(fmt.Sprintf("กำไรขั้นต้น: %s บาท\n", ledger.FormatMoney(profit.GrossProfit)))
+	msg.WriteString(fmt.Sprintf("กำไรสุทธิ: %s บาท", ledger.FormatMoney(profit.NetProfit)))
+
+	return s.replySummaryCard(ctx, id, replyToken, fmt.Sprintf("กำไร: %s", b.Name), msg.String())
 }
